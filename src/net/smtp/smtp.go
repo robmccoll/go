@@ -198,9 +198,15 @@ func (c *Client) Auth(a Auth) error {
 		c.Quit()
 		return err
 	}
-	resp64 := make([]byte, encoding.EncodedLen(len(resp)))
-	encoding.Encode(resp64, resp)
-	code, msg64, err := c.cmd(0, "AUTH %s %s", mech, resp64)
+	var code int
+	var msg64 string
+	var resp64 = make([]byte, encoding.EncodedLen(len(resp)))
+	if len(resp) > 0 {
+		encoding.Encode(resp64, resp)
+		code, msg64, err = c.cmd(0, "AUTH %s %s", mech, resp64)
+	} else {
+		code, msg64, err = c.cmd(0, "AUTH %s", mech)
+	}
 	for err == nil {
 		var msg []byte
 		switch code {
