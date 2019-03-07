@@ -8,13 +8,12 @@ package time
 // A negative or zero duration causes Sleep to return immediately.
 func Sleep(d Duration)
 
-// runtimeNano returns the current value of the runtime clock in nanoseconds.
-func runtimeNano() int64
-
 // Interface to timers implemented in package runtime.
 // Must be in sync with ../runtime/time.go:/^type timer
 type runtimeTimer struct {
-	i      int
+	tb uintptr
+	i  int
+
 	when   int64
 	period int64
 	f      func(interface{}, uintptr) // NOTE: must not be closure
@@ -55,7 +54,7 @@ type Timer struct {
 // Stop does not close the channel, to prevent a read from the channel succeeding
 // incorrectly.
 //
-// To prevent the timer firing after a call to Stop,
+// To prevent a timer created with NewTimer from firing after a call to Stop,
 // check the return value and drain the channel.
 // For example, assuming the program has not received from t.C already:
 //
@@ -65,6 +64,12 @@ type Timer struct {
 //
 // This cannot be done concurrent to other receives from the Timer's
 // channel.
+//
+// For a timer created with AfterFunc(d, f), if t.Stop returns false, then the timer
+// has already expired and the function f has been started in its own goroutine;
+// Stop does not wait for f to complete before returning.
+// If the caller needs to know whether f is completed, it must coordinate
+// with f explicitly.
 func (t *Timer) Stop() bool {
 	if t.r.f == nil {
 		panic("time: Stop called on uninitialized Timer")

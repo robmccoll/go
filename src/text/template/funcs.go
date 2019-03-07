@@ -65,7 +65,7 @@ func createValueFuncs(funcMap FuncMap) map[string]reflect.Value {
 func addValueFuncs(out map[string]reflect.Value, in FuncMap) {
 	for name, fn := range in {
 		if !goodName(name) {
-			panic(fmt.Errorf("function name %s is not a valid identifier", name))
+			panic(fmt.Errorf("function name %q is not a valid identifier", name))
 		}
 		v := reflect.ValueOf(fn)
 		if v.Kind() != reflect.Func {
@@ -139,10 +139,24 @@ func prepareArg(value reflect.Value, argType reflect.Type) (reflect.Value, error
 		}
 		value = reflect.Zero(argType)
 	}
-	if !value.Type().AssignableTo(argType) {
-		return reflect.Value{}, fmt.Errorf("value has type %s; should be %s", value.Type(), argType)
+	if value.Type().AssignableTo(argType) {
+		return value, nil
 	}
-	return value, nil
+	if intLike(value.Kind()) && intLike(argType.Kind()) && value.Type().ConvertibleTo(argType) {
+		value = value.Convert(argType)
+		return value, nil
+	}
+	return reflect.Value{}, fmt.Errorf("value has type %s; should be %s", value.Type(), argType)
+}
+
+func intLike(typ reflect.Kind) bool {
+	switch typ {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return true
+	}
+	return false
 }
 
 // Indexing.
@@ -151,11 +165,12 @@ func prepareArg(value reflect.Value, argType reflect.Type) (reflect.Value, error
 // arguments. Thus "index x 1 2 3" is, in Go syntax, x[1][2][3]. Each
 // indexed item must be a map, slice, or array.
 func index(item reflect.Value, indices ...reflect.Value) (reflect.Value, error) {
-	v := item
+	v := indirectInterface(item)
 	if !v.IsValid() {
 		return reflect.Value{}, fmt.Errorf("index of untyped nil")
 	}
-	for _, index := range indices {
+	for _, i := range indices {
+		index := indirectInterface(i)
 		var isNil bool
 		if v, isNil = indirect(v); isNil {
 			return reflect.Value{}, fmt.Errorf("index of nil pointer")
@@ -221,7 +236,7 @@ func length(item interface{}) (int, error) {
 // call returns the result of evaluating the first argument as a function.
 // The function must return 1 result, or 2 results, the second of which is an error.
 func call(fn reflect.Value, args ...reflect.Value) (reflect.Value, error) {
-	v := fn
+	v := indirectInterface(fn)
 	if !v.IsValid() {
 		return reflect.Value{}, fmt.Errorf("call of nil")
 	}
@@ -245,7 +260,8 @@ func call(fn reflect.Value, args ...reflect.Value) (reflect.Value, error) {
 		}
 	}
 	argv := make([]reflect.Value, len(args))
-	for i, value := range args {
+	for i, arg := range args {
+		value := indirectInterface(arg)
 		// Compute the expected type. Clumsy because of variadics.
 		var argType reflect.Type
 		if !typ.IsVariadic() || i < numIn-1 {
@@ -259,17 +275,32 @@ func call(fn reflect.Value, args ...reflect.Value) (reflect.Value, error) {
 			return reflect.Value{}, fmt.Errorf("arg %d: %s", i, err)
 		}
 	}
-	result := v.Call(argv)
-	if len(result) == 2 && !result[1].IsNil() {
-		return result[0], result[1].Interface().(error)
+	return safeCall(v, argv)
+}
+
+// safeCall runs fun.Call(args), and returns the resulting value and error, if
+// any. If the call panics, the panic value is returned as an error.
+func safeCall(fun reflect.Value, args []reflect.Value) (val reflect.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(error); ok {
+				err = e
+			} else {
+				err = fmt.Errorf("%v", r)
+			}
+		}
+	}()
+	ret := fun.Call(args)
+	if len(ret) == 2 && !ret[1].IsNil() {
+		return ret[0], ret[1].Interface().(error)
 	}
-	return result[0], nil
+	return ret[0], nil
 }
 
 // Boolean logic.
 
 func truth(arg reflect.Value) bool {
-	t, _ := isTrue(arg)
+	t, _ := isTrue(indirectInterface(arg))
 	return t
 }
 
@@ -350,7 +381,7 @@ func basicKind(v reflect.Value) (kind, error) {
 
 // eq evaluates the comparison a == b || a == c || ...
 func eq(arg1 reflect.Value, arg2 ...reflect.Value) (bool, error) {
-	v1 := arg1
+	v1 := indirectInterface(arg1)
 	k1, err := basicKind(v1)
 	if err != nil {
 		return false, err
@@ -358,7 +389,8 @@ func eq(arg1 reflect.Value, arg2 ...reflect.Value) (bool, error) {
 	if len(arg2) == 0 {
 		return false, errNoComparison
 	}
-	for _, v2 := range arg2 {
+	for _, arg := range arg2 {
+		v2 := indirectInterface(arg)
 		k2, err := basicKind(v2)
 		if err != nil {
 			return false, err
@@ -407,11 +439,13 @@ func ne(arg1, arg2 reflect.Value) (bool, error) {
 }
 
 // lt evaluates the comparison a < b.
-func lt(v1, v2 reflect.Value) (bool, error) {
+func lt(arg1, arg2 reflect.Value) (bool, error) {
+	v1 := indirectInterface(arg1)
 	k1, err := basicKind(v1)
 	if err != nil {
 		return false, err
 	}
+	v2 := indirectInterface(arg2)
 	k2, err := basicKind(v2)
 	if err != nil {
 		return false, err
@@ -484,6 +518,7 @@ var (
 	htmlAmp  = []byte("&amp;")
 	htmlLt   = []byte("&lt;")
 	htmlGt   = []byte("&gt;")
+	htmlNull = []byte("\uFFFD")
 )
 
 // HTMLEscape writes to w the escaped HTML equivalent of the plain text data b.
@@ -492,6 +527,8 @@ func HTMLEscape(w io.Writer, b []byte) {
 	for i, c := range b {
 		var html []byte
 		switch c {
+		case '\000':
+			html = htmlNull
 		case '"':
 			html = htmlQuot
 		case '\'':
@@ -515,7 +552,7 @@ func HTMLEscape(w io.Writer, b []byte) {
 // HTMLEscapeString returns the escaped HTML equivalent of the plain text data s.
 func HTMLEscapeString(s string) string {
 	// Avoid allocation if we can.
-	if !strings.ContainsAny(s, `'"&<>`) {
+	if !strings.ContainsAny(s, "'\"&<>\000") {
 		return s
 	}
 	var b bytes.Buffer

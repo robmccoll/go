@@ -153,10 +153,12 @@ func (g *CommentGroup) Text() string {
 // A Field represents a Field declaration list in a struct type,
 // a method list in an interface type, or a parameter/result declaration
 // in a signature.
+// Field.Names is nil for unnamed parameters (parameter lists which only contain types)
+// and embedded struct fields. In the latter case, the field name is the type name.
 //
 type Field struct {
 	Doc     *CommentGroup // associated documentation; or nil
-	Names   []*Ident      // field/method/parameter names; or nil if anonymous field
+	Names   []*Ident      // field/method/parameter names; or nil
 	Type    Expr          // field/method/parameter type
 	Tag     *BasicLit     // field tag; or nil
 	Comment *CommentGroup // line comments; or nil
@@ -207,14 +209,14 @@ func (f *FieldList) End() token.Pos {
 	return token.NoPos
 }
 
-// NumFields returns the number of (named and anonymous fields) in a FieldList.
+// NumFields returns the number of parameters or struct fields represented by a FieldList.
 func (f *FieldList) NumFields() int {
 	n := 0
 	if f != nil {
 		for _, g := range f.List {
 			m := len(g.Names)
 			if m == 0 {
-				m = 1 // anonymous field
+				m = 1
 			}
 			n += m
 		}
@@ -264,10 +266,11 @@ type (
 
 	// A CompositeLit node represents a composite literal.
 	CompositeLit struct {
-		Type   Expr      // literal type; or nil
-		Lbrace token.Pos // position of "{"
-		Elts   []Expr    // list of composite elements; or nil
-		Rbrace token.Pos // position of "}"
+		Type       Expr      // literal type; or nil
+		Lbrace     token.Pos // position of "{"
+		Elts       []Expr    // list of composite elements; or nil
+		Rbrace     token.Pos // position of "}"
+		Incomplete bool      // true if (source) expressions are missing in the Elts list
 	}
 
 	// A ParenExpr node represents a parenthesized expression.
@@ -356,8 +359,8 @@ type (
 	}
 )
 
-// The direction of a channel type is indicated by one
-// of the following constants.
+// The direction of a channel type is indicated by a bit
+// mask including one or both of the following constants.
 //
 type ChanDir int
 
@@ -818,7 +821,7 @@ func (*RangeStmt) stmtNode()      {}
 // constant, type, or variable declaration.
 //
 type (
-	// The Spec type stands for any of *ImportSpec, *AliasSpec, *ValueSpec, or *TypeSpec.
+	// The Spec type stands for any of *ImportSpec, *ValueSpec, and *TypeSpec.
 	Spec interface {
 		Node
 		specNode()
@@ -831,14 +834,6 @@ type (
 		Path    *BasicLit     // import path
 		Comment *CommentGroup // line comments; or nil
 		EndPos  token.Pos     // end of spec (overrides Path.Pos if nonzero)
-	}
-
-	// An AliasSpec node represents a constant, type, variable, or function alias.
-	AliasSpec struct {
-		Doc     *CommentGroup // associated documentation; or nil
-		Name    *Ident        // alias name
-		Orig    Expr          // original (possibly qualified) name
-		Comment *CommentGroup // line comments; or nil
 	}
 
 	// A ValueSpec node represents a constant or variable declaration
@@ -856,6 +851,7 @@ type (
 	TypeSpec struct {
 		Doc     *CommentGroup // associated documentation; or nil
 		Name    *Ident        // type name
+		Assign  token.Pos     // position of '=', if any
 		Type    Expr          // *Ident, *ParenExpr, *SelectorExpr, *StarExpr, or any of the *XxxTypes
 		Comment *CommentGroup // line comments; or nil
 	}
@@ -869,7 +865,6 @@ func (s *ImportSpec) Pos() token.Pos {
 	}
 	return s.Path.Pos()
 }
-func (s *AliasSpec) Pos() token.Pos { return s.Name.Pos() }
 func (s *ValueSpec) Pos() token.Pos { return s.Names[0].Pos() }
 func (s *TypeSpec) Pos() token.Pos  { return s.Name.Pos() }
 
@@ -879,7 +874,7 @@ func (s *ImportSpec) End() token.Pos {
 	}
 	return s.Path.End()
 }
-func (s *AliasSpec) End() token.Pos { return s.Orig.End() }
+
 func (s *ValueSpec) End() token.Pos {
 	if n := len(s.Values); n > 0 {
 		return s.Values[n-1].End()
@@ -895,7 +890,6 @@ func (s *TypeSpec) End() token.Pos { return s.Type.End() }
 // assigned to a Spec.
 //
 func (*ImportSpec) specNode() {}
-func (*AliasSpec) specNode()  {}
 func (*ValueSpec) specNode()  {}
 func (*TypeSpec) specNode()   {}
 
@@ -911,22 +905,20 @@ type (
 	}
 
 	// A GenDecl node (generic declaration node) represents an import,
-	// constant, type, or variable declaration, or a function alias
-	// declaration. A valid Lparen position (Lparen.Line > 0) indicates
-	// a parenthesized declaration.
+	// constant, type or variable declaration. A valid Lparen position
+	// (Lparen.IsValid()) indicates a parenthesized declaration.
 	//
 	// Relationship between Tok value and Specs element type:
 	//
 	//	token.IMPORT  *ImportSpec
-	//	token.CONST   *ValueSpec or *AliasSpec
-	//	token.TYPE    *TypeSpec  or *AliasSpec
-	//	token.VAR     *ValueSpec or *AliasSpec
-	//	token.FUNC                  *AliasSpec
+	//	token.CONST   *ValueSpec
+	//	token.TYPE    *TypeSpec
+	//	token.VAR     *ValueSpec
 	//
 	GenDecl struct {
 		Doc    *CommentGroup // associated documentation; or nil
 		TokPos token.Pos     // position of Tok
-		Tok    token.Token   // IMPORT, CONST, TYPE, VAR, FUNC (alias decl only)
+		Tok    token.Token   // IMPORT, CONST, TYPE, VAR
 		Lparen token.Pos     // position of '(', if any
 		Specs  []Spec
 		Rparen token.Pos // position of ')', if any
@@ -938,7 +930,7 @@ type (
 		Recv *FieldList    // receiver (methods); or nil (functions)
 		Name *Ident        // function/method name
 		Type *FuncType     // function signature: parameters, results, and position of "func" keyword
-		Body *BlockStmt    // function body; or nil (forward declaration)
+		Body *BlockStmt    // function body; or nil for external (non-Go) function
 	}
 )
 
@@ -977,6 +969,19 @@ func (*FuncDecl) declNode() {}
 // The Comments list contains all comments in the source file in order of
 // appearance, including the comments that are pointed to from other nodes
 // via Doc and Comment fields.
+//
+// For correct printing of source code containing comments (using packages
+// go/format and go/printer), special care must be taken to update comments
+// when a File's syntax tree is modified: For printing, comments are interspersed
+// between tokens based on their position. If syntax tree nodes are
+// removed or moved, relevant comments in their vicinity must also be removed
+// (from the File.Comments list) or moved accordingly (by updating their
+// positions). A CommentMap may be used to facilitate some of these operations.
+//
+// Whether and how a comment is associated with a node depends on the
+// interpretation of the syntax tree by the manipulating program: Except for Doc
+// and Comment comments directly associated with nodes, the remaining comments
+// are "free-floating" (see also issues #18593, #20744).
 //
 type File struct {
 	Doc        *CommentGroup   // associated documentation; or nil

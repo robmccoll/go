@@ -5,14 +5,13 @@
 package sys
 
 const (
-	ArchFamily    = MIPS
-	BigEndian     = 1
-	CacheLineSize = 32
+	ArchFamily          = MIPS
+	BigEndian           = true
 	DefaultPhysPageSize = 65536
-	PCQuantum     = 4
-	Int64Align    = 4
-	HugePageSize  = 0
-	MinFrameSize  = 4
+	PCQuantum           = 4
+	Int64Align          = 4
+	HugePageSize        = 0
+	MinFrameSize        = 4
 )
 
 type Uintreg uint32
